@@ -73,7 +73,7 @@ class AdminPanelView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Manage Users", style=discord.ButtonStyle.blurple, row=1)
-async def manage_users_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def manage_users_button(self, button: discord.ui.Button, interaction: discord.Interaction):
     users = await get_users()
     subs = await get_subscriptions()
     embed = discord.Embed(title="User Management", color=0x00aaff)
