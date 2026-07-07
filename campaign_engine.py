@@ -1,7 +1,7 @@
 import asyncio
 import datetime
 import logging
-from typing import Dict, List, Set
+from typing import Dict, List
 import traceback
 
 from storage import get_campaigns, save_campaigns, get_accounts, get_users, save_users, get_subscriptions, save_subscriptions
@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 _running = True
 _dm_tasks: Dict[str, asyncio.Task] = {}
+# Track last send time per channel campaign
+_campaign_last_sent: Dict[str, float] = {}
 
 class CampaignEngine:
     def __init__(self):
@@ -35,27 +37,27 @@ class CampaignEngine:
             task.cancel()
         await asyncio.sleep(2)
 
-    # ---------- Channel Worker ----------
+    # ---------- Channel Worker (with per‑campaign delay) ----------
     async def _channel_worker(self):
         global _running
-        campaigns = []
-        index = 0
         while _running:
             try:
                 all_campaigns = await get_campaigns()
-                campaigns = [c for c in all_campaigns if c.get("type") == "channel" and c.get("status") == "running"]
-                if campaigns:
-                    if index >= len(campaigns):
-                        index = 0
-                    campaign = campaigns[index]
-                    index += 1
-                    await self._process_channel_campaign(campaign)
-                else:
+                running_campaigns = [c for c in all_campaigns if c.get("type") == "channel" and c.get("status") == "running"]
+                now = datetime.datetime.now(datetime.UTC).timestamp()
+                for campaign in running_campaigns:
+                    campaign_id = campaign["id"]
+                    delay = campaign.get("delay", 1)  # seconds
+                    last_sent = _campaign_last_sent.get(campaign_id, 0)
+                    if now - last_sent >= delay:
+                        await self._process_channel_campaign(campaign)
+                        _campaign_last_sent[campaign_id] = now
+                # If no campaigns, sleep a bit
+                if not running_campaigns:
                     await asyncio.sleep(2)
-                    continue
             except Exception as e:
                 logger.error(f"Channel worker error: {e}\n{traceback.format_exc()}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(2)  # cycle interval
 
     async def _process_channel_campaign(self, campaign: Dict):
         campaign_id = campaign["id"]
@@ -90,22 +92,30 @@ class CampaignEngine:
 
         try:
             token = decrypt_token(account["encrypted_token"])
-        except Exception:
+        except Exception as e:
+            logger.error(f"Token decryption error for campaign {campaign_id}: {e}")
             campaign["status"] = "failed"
             campaign["failed_reason"] = "Token decryption error"
             await save_campaigns(await get_campaigns())
             return
 
         success = False
-        if image_url:
-            success = await send_message_with_image(token, channel_id, content, image_url)
-        else:
-            success = await send_message(token, channel_id, content)
+        try:
+            if image_url:
+                success = await send_message_with_image(token, channel_id, content, image_url)
+            else:
+                success = await send_message(token, channel_id, content)
+        except Exception as e:
+            logger.error(f"Send error for campaign {campaign_id}, channel {channel_id}: {e}")
+            success = False
 
-        sent += 1
         if not success:
             failed += 1
+            logger.warning(f"Failed to send message {sent+1}/{total_expected} in campaign {campaign_id} to channel {channel_id}")
+        else:
+            logger.info(f"Sent message {sent+1}/{total_expected} in campaign {campaign_id} to channel {channel_id}")
 
+        sent += 1
         campaign["messages_sent"] = sent
         campaign["messages_failed"] = failed
         if sent >= total_expected:
@@ -113,7 +123,7 @@ class CampaignEngine:
             campaign["completed_at"] = datetime.datetime.now(datetime.UTC).isoformat()
         await save_campaigns(await get_campaigns())
 
-    # ---------- DM Monitor ----------
+    # ---------- DM Monitor (unchanged) ----------
     async def _dm_monitor(self):
         global _running
         while _running:
@@ -189,7 +199,7 @@ class CampaignEngine:
                 logger.error(f"DM responder for {discord_id} error: {e}\n{traceback.format_exc()}")
             await asyncio.sleep(5)
 
-    # ---------- Expiry Checker ----------
+    # ---------- Expiry Checker (unchanged) ----------
     async def _expiry_checker(self):
         global _running
         while _running:
@@ -240,3 +250,4 @@ async def resume_running_campaigns():
     dm_users = set(c["discord_id"] for c in campaigns if c["type"] == "dm_auto_reply" and c["status"] == "running")
     for uid in dm_users:
         await start_dm_responder(uid)
+    # Channel campaigns: last_sent times are reset on startup (will send as soon as delay allows)
