@@ -72,6 +72,35 @@ class AdminPanelView(discord.ui.View):
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="Manage Users", style=discord.ButtonStyle.blurple, row=1)
+async def manage_users_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    users = await get_users()
+    subs = await get_subscriptions()
+    embed = discord.Embed(title="User Management", color=0x00aaff)
+    for uid in list(users.keys())[:25]:
+        plan, _ = await get_effective_plan(uid)
+        embed.add_field(
+            name=f"<@{uid}>",
+            value=f"Plan: {plan.upper()}",
+            inline=False
+        )
+    view = discord.ui.View()
+    view.add_item(SelectUserForManagement(list(users.keys())))
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@discord.ui.button(label="Manage Keys", style=discord.ButtonStyle.blurple, row=1)
+async def manage_keys_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    keys = await get_keys()
+    embed = discord.Embed(title="Key Management", color=0x00aaff)
+    total = len(keys)
+    redeemed = sum(1 for k in keys if k.get("redeemed_by"))
+    embed.add_field(name="Total Keys", value=total, inline=True)
+    embed.add_field(name="Redeemed", value=redeemed, inline=True)
+    embed.add_field(name="Available", value=total - redeemed, inline=True)
+    view = discord.ui.View()
+    view.add_item(SelectKeyForManagement(keys))
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
     @discord.ui.button(label="Revenue", style=discord.ButtonStyle.blurple, row=0)
     async def revenue_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         subs = await get_subscriptions()
