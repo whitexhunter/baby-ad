@@ -88,8 +88,8 @@ class AdminPanelView(discord.ui.View):
     view.add_item(SelectUserForManagement(list(users.keys())))
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-@discord.ui.button(label="Manage Keys", style=discord.ButtonStyle.blurple, row=1)
-async def manage_keys_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @discord.ui.button(label="Manage Keys", style=discord.ButtonStyle.blurple, row=1)
+    async def manage_keys_button(self, button: discord.ui.Button, interaction: discord.Interaction):
     keys = await get_keys()
     embed = discord.Embed(title="Key Management", color=0x00aaff)
     total = len(keys)
