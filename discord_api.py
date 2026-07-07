@@ -1,5 +1,8 @@
 import aiohttp
+import logging
 from typing import Optional, List, Dict
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://discord.com/api/v10"
 HEADERS = {"User-Agent": "DiscordBot (HUNTER, 1.0.0)"}
@@ -14,8 +17,12 @@ async def _request(method: str, endpoint: str, token: str, **kwargs) -> Optional
                     if resp.status == 204:
                         return {"success": True}
                     return await resp.json()
-                return None
-        except Exception:
+                else:
+                    text = await resp.text()
+                    logger.error(f"Discord API error {resp.status} on {endpoint}: {text[:200]}")
+                    return None
+        except Exception as e:
+            logger.error(f"Request exception on {endpoint}: {e}")
             return None
 
 async def validate_token(token: str) -> Optional[Dict]:
@@ -30,6 +37,7 @@ async def send_message_with_image(token: str, channel_id: str, content: str, ima
         try:
             async with session.get(image_url) as img_resp:
                 if img_resp.status != 200:
+                    logger.error(f"Failed to download image from {image_url}: status {img_resp.status}")
                     return False
                 img_data = await img_resp.read()
             data = aiohttp.FormData()
@@ -40,8 +48,14 @@ async def send_message_with_image(token: str, channel_id: str, content: str, ima
                 headers={**HEADERS, "Authorization": token},
                 data=data
             ) as resp:
-                return resp.status == 200
-        except Exception:
+                if resp.status == 200:
+                    return True
+                else:
+                    text = await resp.text()
+                    logger.error(f"Image send error {resp.status} to channel {channel_id}: {text[:200]}")
+                    return False
+        except Exception as e:
+            logger.error(f"Image send exception: {e}")
             return False
 
 async def get_dm_channels(token: str) -> List[Dict]:
