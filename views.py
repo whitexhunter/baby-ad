@@ -38,8 +38,8 @@ async def get_effective_plan(discord_id: str):
 
 # ---------- Modals ----------
 class RedeemModal(discord.ui.Modal):
-    def __init__(self, *args, **kwargs):
-        super().__init__(title="Redeem License Key", *args, **kwargs)
+    def __init__(self):
+        super().__init__(title="Redeem License Key")
         self.add_item(discord.ui.InputText(label="License Key", placeholder="HUNTER-XXXX-XXXX-XXXX", style=discord.InputTextStyle.short))
 
     async def callback(self, interaction: discord.Interaction):
@@ -82,11 +82,14 @@ class RedeemModal(discord.ui.Modal):
                 s["status"] = "expired"
         await save_subscriptions(subs)
         await interaction.response.send_message(f"✅ Key redeemed successfully! You now have {plan.upper()} plan.", ephemeral=True)
-        await interaction.message.edit(view=PanelView(interaction.user.id))
+        try:
+            await interaction.message.edit(view=PanelView(interaction.user.id))
+        except:
+            pass  # Message might be deleted or not editable
 
 class AddAccountModal(discord.ui.Modal):
-    def __init__(self, *args, **kwargs):
-        super().__init__(title="Add Account", *args, **kwargs)
+    def __init__(self):
+        super().__init__(title="Add Account")
         self.add_item(discord.ui.InputText(label="Discord Token", placeholder="Your token here", style=discord.InputTextStyle.long))
 
     async def callback(self, interaction: discord.Interaction):
@@ -120,11 +123,128 @@ class AddAccountModal(discord.ui.Modal):
         accounts.append(account)
         await save_accounts(accounts)
         await interaction.response.send_message("✅ Account added successfully!", ephemeral=True)
-        await interaction.message.edit(view=PanelView(interaction.user.id))
+        try:
+            await interaction.message.edit(view=PanelView(interaction.user.id))
+        except:
+            pass
+
+class NewCampaignModal(discord.ui.Modal):
+    def __init__(self, campaign_type: str, account_id: str):
+        super().__init__(title=f"New {campaign_type} Campaign")
+        self.campaign_type = campaign_type
+        self.account_id = account_id
+        if campaign_type == "Channel Messaging":
+            self.add_item(discord.ui.InputText(label="Campaign Name", placeholder="My Campaign", style=discord.InputTextStyle.short))
+            self.add_item(discord.ui.InputText(label="Channel IDs (comma separated)", placeholder="123456789,987654321", style=discord.InputTextStyle.long))
+            self.add_item(discord.ui.InputText(label="Messages (separate with ||)", placeholder="Hello || World! || This is a test", style=discord.InputTextStyle.long))
+            self.add_item(discord.ui.InputText(label="Image URLs (optional, || separated)", placeholder="https://...||https://...", required=False, style=discord.InputTextStyle.long))
+            self.add_item(discord.ui.InputText(label="Delay (seconds)", placeholder="1", value="1", style=discord.InputTextStyle.short))
+        else:  # DM Auto-Reply
+            self.add_item(discord.ui.InputText(label="Campaign Name", placeholder="My DM Auto-Reply", style=discord.InputTextStyle.short))
+            self.add_item(discord.ui.InputText(label="Reply Messages (one per line)", placeholder="Hello!\nHow can I help?", style=discord.InputTextStyle.long))
+            self.add_item(discord.ui.InputText(label="Keywords (comma separated, optional)", placeholder="help,info", required=False, style=discord.InputTextStyle.long))
+
+    async def callback(self, interaction: discord.Interaction):
+        discord_id = str(interaction.user.id)
+        if self.campaign_type == "Channel Messaging":
+            name = self.children[0].value.strip()
+            channels_str = self.children[1].value.strip()
+            channels = [ch.strip() for ch in channels_str.split(",") if ch.strip()]
+            if not channels:
+                await interaction.response.send_message("Please provide at least one channel ID.", ephemeral=True)
+                return
+            messages_str = self.children[2].value.strip()
+            messages_list = [m.strip() for m in messages_str.split("||") if m.strip()]
+            if not messages_list:
+                await interaction.response.send_message("Please provide at least one message.", ephemeral=True)
+                return
+            image_urls_str = self.children[3].value.strip() if len(self.children) > 3 else ""
+            image_urls = [url.strip() for url in image_urls_str.split("||") if url.strip()] if image_urls_str else []
+            delay_str = self.children[4].value.strip()
+            try:
+                delay = int(delay_str)
+                if delay < 1:
+                    raise ValueError
+            except:
+                await interaction.response.send_message("Delay must be a positive integer.", ephemeral=True)
+                return
+
+            plan, limits = await get_effective_plan(discord_id)
+            if image_urls and not limits["image"]:
+                await interaction.response.send_message("Image attachments require V2+ or Lifetime plan.", ephemeral=True)
+                return
+
+            messages = []
+            for i, msg in enumerate(messages_list):
+                entry = {"content": msg}
+                if image_urls and i < len(image_urls):
+                    entry["image_url"] = image_urls[i]
+                messages.append(entry)
+
+            campaign = {
+                "id": str(uuid.uuid4()),
+                "discord_id": discord_id,
+                "account_id": self.account_id,
+                "name": name,
+                "type": "channel",
+                "channels": channels,
+                "messages": messages,
+                "delay": delay,
+                "status": "idle",
+                "messages_sent": 0,
+                "messages_failed": 0,
+                "created_at": datetime.datetime.now(datetime.UTC).isoformat()
+            }
+            campaigns = await get_campaigns()
+            campaigns.append(campaign)
+            await save_campaigns(campaigns)
+            campaign["status"] = "running"
+            await save_campaigns(campaigns)
+            await interaction.response.send_message("✅ Campaign created and started!", ephemeral=True)
+            try:
+                await interaction.message.edit(view=PanelView(interaction.user.id))
+            except:
+                pass
+
+        else:  # DM Auto-Reply
+            plan, limits = await get_effective_plan(discord_id)
+            if not limits["dm"]:
+                await interaction.response.send_message("DM Auto-Reply requires V3+ or Lifetime plan.", ephemeral=True)
+                return
+            name = self.children[0].value.strip()
+            replies_str = self.children[1].value.strip()
+            replies = [r.strip() for r in replies_str.split("\n") if r.strip()]
+            if not replies:
+                await interaction.response.send_message("Please provide at least one reply message.", ephemeral=True)
+                return
+            keywords_str = self.children[2].value.strip() if len(self.children) > 2 else ""
+            keywords = [k.strip().lower() for k in keywords_str.split(",") if k.strip()] if keywords_str else []
+            campaign = {
+                "id": str(uuid.uuid4()),
+                "discord_id": discord_id,
+                "account_id": self.account_id,
+                "name": name,
+                "type": "dm_auto_reply",
+                "messages": replies,
+                "keywords": keywords,
+                "status": "running",
+                "replied_count": 0,
+                "last_replied_id": None,
+                "created_at": datetime.datetime.now(datetime.UTC).isoformat()
+            }
+            campaigns = await get_campaigns()
+            campaigns.append(campaign)
+            await save_campaigns(campaigns)
+            await start_dm_responder(discord_id)
+            await interaction.response.send_message("✅ DM Auto-Reply campaign started!", ephemeral=True)
+            try:
+                await interaction.message.edit(view=PanelView(interaction.user.id))
+            except:
+                pass
 
 class EditChannelCampaignModal(discord.ui.Modal):
-    def __init__(self, campaign: dict, *args, **kwargs):
-        super().__init__(title=f"Edit: {campaign['name']}", *args, **kwargs)
+    def __init__(self, campaign: dict):
+        super().__init__(title=f"Edit: {campaign['name']}")
         self.campaign_id = campaign["id"]
         
         channels_str = ", ".join(campaign.get("channels", []))
@@ -194,11 +314,14 @@ class EditChannelCampaignModal(discord.ui.Modal):
         
         await save_campaigns(campaigns)
         await interaction.response.send_message("✅ Campaign updated successfully!", ephemeral=True)
-        await interaction.message.edit(view=PanelView(discord_id))
+        try:
+            await interaction.message.edit(view=PanelView(interaction.user.id))
+        except:
+            pass
 
 class EditDMCampaignModal(discord.ui.Modal):
-    def __init__(self, campaign: dict, *args, **kwargs):
-        super().__init__(title=f"Edit: {campaign['name']}", *args, **kwargs)
+    def __init__(self, campaign: dict):
+        super().__init__(title=f"Edit: {campaign['name']}")
         self.campaign_id = campaign["id"]
         
         replies_str = "\n".join(campaign.get("messages", []))
@@ -235,7 +358,10 @@ class EditDMCampaignModal(discord.ui.Modal):
         
         await save_campaigns(campaigns)
         await interaction.response.send_message("✅ Campaign updated successfully!", ephemeral=True)
-        await interaction.message.edit(view=PanelView(discord_id))
+        try:
+            await interaction.message.edit(view=PanelView(interaction.user.id))
+        except:
+            pass
 
 # ---------- Panel View ----------
 class PanelView(discord.ui.View):
@@ -298,7 +424,10 @@ class PanelView(discord.ui.View):
         expiry = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=10)
         await upsert_user(discord_id, {"trial_active": True, "trial_expires_at": expiry.isoformat(), "trial_used": False})
         await interaction.response.send_message("✅ Trial activated for 10 minutes! Enjoy V3 features.", ephemeral=True)
-        await interaction.message.edit(view=PanelView(discord_id))
+        try:
+            await interaction.message.edit(view=PanelView(discord_id))
+        except:
+            pass
 
     @discord.ui.button(label="Plans & Buy", style=discord.ButtonStyle.blurple, row=0)
     async def plans_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -330,7 +459,7 @@ class PanelView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return str(interaction.user.id) == self.discord_id
 
-# ---------- Sub‑views ----------
+# ---------- Sub-views ----------
 class MyAccountsButton(discord.ui.Button):
     def __init__(self, discord_id: str):
         super().__init__(label="My Accounts", style=discord.ButtonStyle.blurple, row=1)
@@ -369,7 +498,10 @@ class AccountDeleteSelect(discord.ui.Select):
         accounts = [a for a in accounts if a["id"] != account_id]
         await save_accounts(accounts)
         await interaction.response.send_message("✅ Account deleted.", ephemeral=True)
-        await interaction.message.edit(view=PanelView(self.discord_id))
+        try:
+            await interaction.message.edit(view=PanelView(self.discord_id))
+        except:
+            pass
 
 class MyCampaignsButton(discord.ui.Button):
     def __init__(self, discord_id: str):
@@ -454,7 +586,10 @@ class ResumeCampaignSelect(discord.ui.Select):
         if c and c["type"] == "dm_auto_reply":
             await start_dm_responder(self.discord_id)
         await interaction.response.send_message("✅ Campaign resumed.", ephemeral=True)
-        await interaction.message.edit(view=PanelView(self.discord_id))
+        try:
+            await interaction.message.edit(view=PanelView(self.discord_id))
+        except:
+            pass
 
 class PauseAllButton(discord.ui.Button):
     def __init__(self, discord_id: str):
@@ -468,7 +603,10 @@ class PauseAllButton(discord.ui.Button):
                 c["status"] = "paused"
         await save_campaigns(campaigns)
         await interaction.response.send_message("✅ All running campaigns paused.", ephemeral=True)
-        await interaction.message.edit(view=PanelView(self.discord_id))
+        try:
+            await interaction.message.edit(view=PanelView(self.discord_id))
+        except:
+            pass
 
 class AddAccountButton(discord.ui.Button):
     def __init__(self, discord_id: str):
@@ -529,8 +667,3 @@ class AccountSelectForCampaign(discord.ui.Select):
                 await interaction.response.send_message("DM Auto-Reply requires V3+ or Lifetime plan.", ephemeral=True)
                 return
             await interaction.response.send_modal(NewCampaignModal("DM Auto-Reply", account_id))
-
-# Keep NewCampaignModal from your existing code
-class NewCampaignModal(discord.ui.Modal):
-    # ... keep your existing NewCampaignModal class (it's unchanged)
-    pass
