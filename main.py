@@ -6,6 +6,8 @@ import io
 import shutil
 import datetime
 import uuid
+import logging
+logging.basicConfig(level=logging.INFO)
 
 from storage import get_users, get_accounts, get_campaigns, get_subscriptions, get_keys, save_subscriptions
 from views import PanelView, RedeemModal, get_effective_plan
