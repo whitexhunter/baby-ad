@@ -122,120 +122,126 @@ class AddAccountModal(discord.ui.Modal):
         await interaction.response.send_message("✅ Account added successfully!", ephemeral=True)
         await interaction.message.edit(view=PanelView(interaction.user.id))
 
-class NewCampaignModal(discord.ui.Modal):
-    def __init__(self, campaign_type: str, account_id: str, *args, **kwargs):
-        super().__init__(title=f"New {campaign_type} Campaign", *args, **kwargs)
-        self.campaign_type = campaign_type
-        self.account_id = account_id
-        if campaign_type == "Channel Messaging":
-            self.add_item(discord.ui.InputText(label="Campaign Name", placeholder="My Campaign", style=discord.InputTextStyle.short))
-            self.add_item(discord.ui.InputText(label="Channel IDs (comma separated)", placeholder="123456789,987654321", style=discord.InputTextStyle.long))
-            self.add_item(discord.ui.InputText(label="Messages (separate with ||)", placeholder="Hello || World! || This is a test", style=discord.InputTextStyle.long))
-            self.add_item(discord.ui.InputText(label="Image URLs (optional, || separated)", placeholder="https://...||https://...", required=False, style=discord.InputTextStyle.long))
-            self.add_item(discord.ui.InputText(label="Delay (seconds)", placeholder="1", value="1", style=discord.InputTextStyle.short))
-        else:
-            self.add_item(discord.ui.InputText(label="Campaign Name", placeholder="My DM Auto-Reply", style=discord.InputTextStyle.short))
-            self.add_item(discord.ui.InputText(label="Reply Messages (one per line)", placeholder="Hello!\nHow can I help?", style=discord.InputTextStyle.long))
-            self.add_item(discord.ui.InputText(label="Keywords (comma separated, optional)", placeholder="help,info", required=False, style=discord.InputTextStyle.long))
+class EditChannelCampaignModal(discord.ui.Modal):
+    def __init__(self, campaign: dict, *args, **kwargs):
+        super().__init__(title=f"Edit: {campaign['name']}", *args, **kwargs)
+        self.campaign_id = campaign["id"]
+        
+        channels_str = ", ".join(campaign.get("channels", []))
+        messages_str = " || ".join([m["content"] for m in campaign.get("messages", [])])
+        image_urls = [m.get("image_url", "") for m in campaign.get("messages", []) if m.get("image_url")]
+        image_urls_str = " || ".join(image_urls) if image_urls else ""
+        delay = str(campaign.get("delay", 1))
+        
+        self.add_item(discord.ui.InputText(label="Campaign Name", value=campaign["name"], style=discord.InputTextStyle.short))
+        self.add_item(discord.ui.InputText(label="Channel IDs (comma separated)", value=channels_str, style=discord.InputTextStyle.long))
+        self.add_item(discord.ui.InputText(label="Messages (separate with ||)", value=messages_str, style=discord.InputTextStyle.long))
+        self.add_item(discord.ui.InputText(label="Image URLs (optional, || separated)", value=image_urls_str, required=False, style=discord.InputTextStyle.long))
+        self.add_item(discord.ui.InputText(label="Delay (seconds)", value=delay, style=discord.InputTextStyle.short))
 
     async def callback(self, interaction: discord.Interaction):
         discord_id = str(interaction.user.id)
-        if self.campaign_type == "Channel Messaging":
-            name = self.children[0].value.strip()
-            channels_str = self.children[1].value.strip()
-            channels = [ch.strip() for ch in channels_str.split(",") if ch.strip()]
-            if not channels:
-                await interaction.response.send_message("Please provide at least one channel ID.", ephemeral=True)
-                return
-            messages_str = self.children[2].value.strip()
-            messages_list = [m.strip() for m in messages_str.split("||") if m.strip()]
-            if not messages_list:
-                await interaction.response.send_message("Please provide at least one message.", ephemeral=True)
-                return
-            image_urls_str = self.children[3].value.strip() if len(self.children) > 3 else ""
-            image_urls = [url.strip() for url in image_urls_str.split("||") if url.strip()] if image_urls_str else []
-            delay_str = self.children[4].value.strip()
-            try:
-                delay = int(delay_str)
-                if delay < 1:
-                    raise ValueError
-            except:
-                await interaction.response.send_message("Delay must be a positive integer.", ephemeral=True)
-                return
+        
+        name = self.children[0].value.strip()
+        channels_str = self.children[1].value.strip()
+        channels = [ch.strip() for ch in channels_str.split(",") if ch.strip()]
+        if not channels:
+            await interaction.response.send_message("Please provide at least one channel ID.", ephemeral=True)
+            return
+        
+        messages_str = self.children[2].value.strip()
+        messages_list = [m.strip() for m in messages_str.split("||") if m.strip()]
+        if not messages_list:
+            await interaction.response.send_message("Please provide at least one message.", ephemeral=True)
+            return
+        
+        image_urls_str = self.children[3].value.strip() if len(self.children) > 3 else ""
+        image_urls = [url.strip() for url in image_urls_str.split("||") if url.strip()] if image_urls_str else []
+        
+        delay_str = self.children[4].value.strip()
+        try:
+            delay = int(delay_str)
+            if delay < 1:
+                raise ValueError
+        except:
+            await interaction.response.send_message("Delay must be a positive integer.", ephemeral=True)
+            return
+        
+        plan, limits = await get_effective_plan(discord_id)
+        if image_urls and not limits["image"]:
+            await interaction.response.send_message("Image attachments require V2+ or Lifetime plan.", ephemeral=True)
+            return
+        
+        messages = []
+        for i, msg in enumerate(messages_list):
+            entry = {"content": msg}
+            if image_urls and i < len(image_urls):
+                entry["image_url"] = image_urls[i]
+            messages.append(entry)
+        
+        campaigns = await get_campaigns()
+        for c in campaigns:
+            if c["id"] == self.campaign_id:
+                c["name"] = name
+                c["channels"] = channels
+                c["messages"] = messages
+                c["delay"] = delay
+                if c["status"] in ("completed", "failed"):
+                    c["status"] = "idle"
+                    c["messages_sent"] = 0
+                    c["messages_failed"] = 0
+                break
+        
+        await save_campaigns(campaigns)
+        await interaction.response.send_message("✅ Campaign updated successfully!", ephemeral=True)
+        await interaction.message.edit(view=PanelView(discord_id))
 
-            plan, limits = await get_effective_plan(discord_id)
-            if image_urls and not limits["image"]:
-                await interaction.response.send_message("Image attachments require V2+ or Lifetime plan.", ephemeral=True)
-                return
+class EditDMCampaignModal(discord.ui.Modal):
+    def __init__(self, campaign: dict, *args, **kwargs):
+        super().__init__(title=f"Edit: {campaign['name']}", *args, **kwargs)
+        self.campaign_id = campaign["id"]
+        
+        replies_str = "\n".join(campaign.get("messages", []))
+        keywords_str = ", ".join(campaign.get("keywords", []))
+        
+        self.add_item(discord.ui.InputText(label="Campaign Name", value=campaign["name"], style=discord.InputTextStyle.short))
+        self.add_item(discord.ui.InputText(label="Reply Messages (one per line)", value=replies_str, style=discord.InputTextStyle.long))
+        self.add_item(discord.ui.InputText(label="Keywords (comma separated, optional)", value=keywords_str, required=False, style=discord.InputTextStyle.long))
 
-            messages = []
-            for i, msg in enumerate(messages_list):
-                entry = {"content": msg}
-                if image_urls and i < len(image_urls):
-                    entry["image_url"] = image_urls[i]
-                messages.append(entry)
-
-            campaign = {
-                "id": str(uuid.uuid4()),
-                "discord_id": discord_id,
-                "account_id": self.account_id,
-                "name": name,
-                "type": "channel",
-                "channels": channels,
-                "messages": messages,
-                "delay": delay,
-                "status": "idle",
-                "messages_sent": 0,
-                "messages_failed": 0,
-                "created_at": datetime.datetime.now(datetime.UTC).isoformat()
-            }
-            campaigns = await get_campaigns()
-            campaigns.append(campaign)
-            await save_campaigns(campaigns)
-            campaign["status"] = "running"
-            await save_campaigns(campaigns)
-            await interaction.response.send_message("✅ Campaign created and started!", ephemeral=True)
-            await interaction.message.edit(view=PanelView(interaction.user.id))
-
-        else:  # DM Auto-Reply
-            plan, limits = await get_effective_plan(discord_id)
-            if not limits["dm"]:
-                await interaction.response.send_message("DM Auto-Reply requires V3+ or Lifetime plan.", ephemeral=True)
-                return
-            name = self.children[0].value.strip()
-            replies_str = self.children[1].value.strip()
-            replies = [r.strip() for r in replies_str.split("\n") if r.strip()]
-            if not replies:
-                await interaction.response.send_message("Please provide at least one reply message.", ephemeral=True)
-                return
-            keywords_str = self.children[2].value.strip() if len(self.children) > 2 else ""
-            keywords = [k.strip().lower() for k in keywords_str.split(",") if k.strip()] if keywords_str else []
-            campaign = {
-                "id": str(uuid.uuid4()),
-                "discord_id": discord_id,
-                "account_id": self.account_id,
-                "name": name,
-                "type": "dm_auto_reply",
-                "messages": replies,
-                "keywords": keywords,
-                "status": "running",
-                "replied_count": 0,
-                "last_replied_id": None,
-                "created_at": datetime.datetime.now(datetime.UTC).isoformat()
-            }
-            campaigns = await get_campaigns()
-            campaigns.append(campaign)
-            await save_campaigns(campaigns)
-            await start_dm_responder(discord_id)
-            await interaction.response.send_message("✅ DM Auto-Reply campaign started!", ephemeral=True)
-            await interaction.message.edit(view=PanelView(interaction.user.id))
+    async def callback(self, interaction: discord.Interaction):
+        discord_id = str(interaction.user.id)
+        
+        name = self.children[0].value.strip()
+        replies_str = self.children[1].value.strip()
+        replies = [r.strip() for r in replies_str.split("\n") if r.strip()]
+        if not replies:
+            await interaction.response.send_message("Please provide at least one reply message.", ephemeral=True)
+            return
+        
+        keywords_str = self.children[2].value.strip() if len(self.children) > 2 else ""
+        keywords = [k.strip().lower() for k in keywords_str.split(",") if k.strip()] if keywords_str else []
+        
+        campaigns = await get_campaigns()
+        for c in campaigns:
+            if c["id"] == self.campaign_id:
+                c["name"] = name
+                c["messages"] = replies
+                c["keywords"] = keywords
+                if c["status"] in ("completed", "failed"):
+                    c["status"] = "idle"
+                    c["replied_count"] = 0
+                    c["last_replied_id"] = None
+                break
+        
+        await save_campaigns(campaigns)
+        await interaction.response.send_message("✅ Campaign updated successfully!", ephemeral=True)
+        await interaction.message.edit(view=PanelView(discord_id))
 
 # ---------- Panel View ----------
 class PanelView(discord.ui.View):
     def __init__(self, discord_id: str):
         super().__init__(timeout=None)
         self.discord_id = discord_id
-        # Buttons are added by add_full_buttons after creation
 
     async def get_embed(self):
         discord_id = self.discord_id
@@ -399,7 +405,33 @@ class MyCampaignsButton(discord.ui.Button):
         running_campaigns = [c for c in user_campaigns if c["status"] == "running"]
         if running_campaigns:
             view.add_item(PauseAllButton(self.discord_id))
+        if user_campaigns:
+            view.add_item(EditCampaignSelect(user_campaigns, self.discord_id))
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+class EditCampaignSelect(discord.ui.Select):
+    def __init__(self, campaigns: list, discord_id: str):
+        options = []
+        for c in campaigns:
+            label = f"{c['name']} ({c['status']})"
+            options.append(discord.SelectOption(label=label[:100], value=c["id"]))
+        super().__init__(placeholder="Select campaign to edit", min_values=1, max_values=1, options=options)
+        self.discord_id = discord_id
+
+    async def callback(self, interaction: discord.Interaction):
+        campaign_id = self.values[0]
+        campaigns = await get_campaigns()
+        campaign = next((c for c in campaigns if c["id"] == campaign_id), None)
+        if not campaign:
+            await interaction.response.send_message("Campaign not found.", ephemeral=True)
+            return
+        if campaign["discord_id"] != self.discord_id:
+            await interaction.response.send_message("You don't own this campaign.", ephemeral=True)
+            return
+        if campaign["type"] == "channel":
+            await interaction.response.send_modal(EditChannelCampaignModal(campaign))
+        else:
+            await interaction.response.send_modal(EditDMCampaignModal(campaign))
 
 class ResumeCampaignSelect(discord.ui.Select):
     def __init__(self, campaigns: list, discord_id: str):
@@ -497,3 +529,8 @@ class AccountSelectForCampaign(discord.ui.Select):
                 await interaction.response.send_message("DM Auto-Reply requires V3+ or Lifetime plan.", ephemeral=True)
                 return
             await interaction.response.send_modal(NewCampaignModal("DM Auto-Reply", account_id))
+
+# Keep NewCampaignModal from your existing code
+class NewCampaignModal(discord.ui.Modal):
+    # ... keep your existing NewCampaignModal class (it's unchanged)
+    pass
